@@ -1,5 +1,9 @@
 # microservices
+
+npm install
+
 lspark-p
+pip install -r requirements.txt
 python3 server.py
 
 auth0-server

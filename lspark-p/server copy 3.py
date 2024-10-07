@@ -1,16 +1,19 @@
 import base64
 from email import errors
 import traceback
-from flask import Flask, jsonify, request
+from flask import Flask, json, jsonify, request
 import jwt
 import requests
 from functools import wraps
 from pymongo import MongoClient
 import os
+import subprocess
 import uuid
 from flask_cors import CORS
 from jwt import ExpiredSignatureError, InvalidAudienceError, InvalidTokenError
-from coincurve import PrivateKey
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization
+from bson import ObjectId
 import uma
 
 # Инициализация Flask и MongoDB клиента
@@ -91,20 +94,6 @@ def requires_auth(f):
 
     return decorated
 
-# Функция для генерации ключей secp256k1 с использованием coincurve
-def generate_secp256k1_key():
-    private_key = PrivateKey()
-    public_key = private_key.public_key.format(compressed=False)
-    public_key_base64 = base64.b64encode(public_key).decode('utf-8')
-
-    private_key_der = private_key.to_der()
-    private_key_base64 = base64.b64encode(private_key_der).decode('utf-8')
-
-    return {
-        "private_key": private_key_base64,
-        "public_key": public_key_base64
-    }
-
 # Маршрут для генерации ключей и их сохранения в базе данных, если они отсутствуют
 @app.route('/generate_keys_if_absent', methods=['POST'])
 @requires_auth  # Требуется аутентификация JWT
@@ -117,23 +106,50 @@ def generate_keys_if_absent():
         return jsonify({"message": "Keys already exist for this user", "keys": format_keys(existing_keys)}), 200
 
     # Генерация ключей, если они отсутствуют
-    try:
-        keys_data = generate_secp256k1_key()
-        keys_data["user_id"] = user_id
+    key_file = f'ec_key_{uuid.uuid4().hex}.pem'
+    cert_file = f'ec_crt_{uuid.uuid4().hex}.crt'
 
-        # Сохранение публичного и приватного ключа в базе данных MongoDB с user_id
+    try:
+        # Генерация secp256k1 ключа
+        subprocess.run(['openssl', 'ecparam', '-genkey', '-name', 'secp256k1', '-out', key_file], check=True)
+
+        # Получение публичного ключа
+        result = subprocess.run(['openssl', 'ec', '-in', key_file, '-pubout', '-outform', 'DER'], check=True, capture_output=True)
+        public_key_der = result.stdout
+        public_key_base64 = base64.b64encode(public_key_der).decode('utf-8')
+
+        # Создание самоподписанного сертификата
+        subprocess.run([
+            'openssl', 'req', '-new', '-x509', '-key', key_file,
+            '-sha256', '-nodes', '-out', cert_file,
+            '-days', '365',
+            '-subj', '/C=AS/ST=AS/L=AS/O=AS/OU=AS/CN=AS/emailAddress=galprimulus@gmail.com'
+        ], check=True)
+
+        # Считывание содержимого сертификата
+        with open(cert_file, 'rb') as cert:
+            cert_data = base64.b64encode(cert.read()).decode('utf-8')
+
+        # Сохранение публичного ключа и сертификата в базе данных MongoDB с user_id
+        keys_data = {
+            "user_id": user_id,
+            "public_key": public_key_base64,
+            "certificate": cert_data
+        }
         keys_collection.insert_one(keys_data)
+
+        # Удаление файлов с сервера
+        os.remove(key_file)
+        os.remove(cert_file)
 
         return jsonify({"message": "Keys generated and stored in database", "keys": format_keys(keys_data)}), 201
 
     except errors.DuplicateKeyError:
         return jsonify({"message": "Keys already exist for this user"}), 409
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": str(e)}), 500
     except Exception as e:
-        error_message = str(e)
-        traceback_str = traceback.format_exc()
-        print("Error occurred: ", error_message)
-        print("Traceback: ", traceback_str)
-        return jsonify({"error": "Failed to generate keys", "details": error_message, "traceback": traceback_str}), 500
+        return jsonify({"error": str(e)}), 500
 
 # Маршрут для начального LNURLp запроса
 @app.route('/initial_lnurlp_request', methods=['POST'])
@@ -147,12 +163,13 @@ def initial_lnurlp_request():
         return jsonify({"message": "Keys not found for this user"}), 404
 
     # Извлечение данных для формирования запроса
-    private_key_der = base64.b64decode(user_keys["private_key"])
+    public_key = user_keys["public_key"]
+    certificate = user_keys["certificate"]
 
     try:
         # Создание начального LNURLp запроса используя Lightspark UMA SDK
         lnurlp_request = uma.create_uma_lnurlp_request_url(
-            signing_private_key=private_key_der,
+            signing_private_key=base64.b64decode(public_key),
             receiver_address="$bob@vasp2.com",
             sender_vasp_domain="vasp1.com",
             is_subject_to_travel_rule=True,
@@ -168,14 +185,14 @@ def initial_lnurlp_request():
         print("Traceback: ", traceback_str)
 
         return jsonify({"error": "Failed to perform LNURLp request", "details": error_message, "traceback": traceback_str}), 500
-
-# Функция для форматирования данных ключей перед их отправкой клиенту
+    
+# Обновленная функция для форматирования данных ключей
 def format_keys(keys):
     return {
         "_id": str(keys.get("_id", "")),
         "user_id": keys["user_id"],
         "public_key": keys["public_key"],
-        "certificate": keys.get("certificate", "")
+        "certificate": keys["certificate"]
     }
 
 # Пример защищенного маршрута

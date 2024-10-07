@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "name": "Todo API Gateway",
+  "port": 8080,
+  "log_level": "DEBUG",
+  "extra_config": {
+    "github.com/devopsfaith/krakend/logging": {
+      "level": "DEBUG"
+    },
+    "auth/validator": {
+      "alg": "RS256",
+      "jwk_url": "https://dev-w4mhfi5sg7rm3bcl.us.auth0.com/.well-known/jwks.json",
+      "issuer": "https://dev-w4mhfi5sg7rm3bcl.us.auth0.com/",
+      "audience": [
+        "http://localhost:3033",
+        "https://dev-w4mhfi5sg7rm3bcl.us.auth0.com/userinfo"
+      ],
+      "roles_key_is_nested": false,
+      "cache": true,
+      "propagate_claims": "Authorization"
+    }
+  },
+  "endpoints": [
+    {
+      "endpoint": "/api/todos",
+      "method": "GET",
+      "output_encoding": "json",
+      "extra_config": {
+        "auth/validator": {
+          "alg": "RS256",
+          "jwk_url": "https://dev-w4mhfi5sg7rm3bcl.us.auth0.com/.well-known/jwks.json",
+          "issuer": "https://dev-w4mhfi5sg7rm3bcl.us.auth0.com/",
+          "audience": [
+            "http://localhost:3033",
+            "https://dev-w4mhfi5sg7rm3bcl.us.auth0.com/userinfo"
+          ],
+          "roles_key_is_nested": false,
+          "cache": true,
+          "propagate_claims": "Authorization"
+        },
+        "github.com/devopsfaith/krakend/http": {
+          "headers_to_pass": ["Authorization", "Content-Type"]
+        }
+      },
+      "backend": [
+        {
+          "host": ["https://346c-182-253-51-176.ngrok-free.app"],
+          "url_pattern": "/api/todos",
+          "extra_config": {
+            "github.com/devopsfaith/krakend/http": {
+              "headers_to_pass": ["Authorization", "Content-Type"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
